@@ -3,7 +3,7 @@
 	"license": "MIT",
 	"require": {
 		"php": "^7.4|^8.0",
-		"dnj/phpvmomi": "@dev",
+		"dnj/phpvmomi": "^1.0",
 		"dnj/tmp-filesystem": "^1.0"
 	},
 	"require-dev": {
