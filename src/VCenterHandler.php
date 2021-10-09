@@ -7,51 +7,27 @@ use dnj\phpvmomi\DataObjects\ManagedObjectReference;
 use dnj\phpvmomi\DataObjects\VirtualMachineCloneSpec;
 use dnj\phpvmomi\DataObjects\VirtualMachineRelocateSpec;
 use dnj\phpvmomi\ManagedObjects\VirtualMachine;
+use Exception;
 
 class VCenterHandler extends HandlerAbstract
 {
-    private API $api;
-    private string $sourceID;
-
-    public function __construct(API $api, string $sourceID)
-    {
-        $this->api = $api;
-        $this->sourceID = $sourceID;
-    }
-
     /**
-     * @return static
+     * @param VirtualMachine|string $source
      */
-    public function setSourceID(string $sourceID): self
+    public function __construct(API $api, $source)
     {
-        $this->sourceID = $sourceID;
-
-        return $this;
+        if (!$source instanceof VirtualMachine) {
+            throw new Exception('Currently only VirtualMachine objects are accepted as source');
+        }
+        parent::__construct($api, $source);
     }
 
-    public function getSourceID(): string
-    {
-        return $this->sourceID;
-    }
-
-    /**
-     * @return static
-     */
-    public function setAPI(API $api): self
-    {
-        $this->api = $api;
-
-        return $this;
-    }
-
-    public function getAPI(): API
-    {
-        return $this->api;
-    }
-
-    public function cloneTo(string $name): string
+    public function cloneTo(string $name): VirtualMachine
     {
         $source = $this->getSource();
+        if (!$source instanceof VirtualMachine) {
+            throw new Exception('Currently only VirtualMachine objects are accepted as source');
+        }
         $location = $this->location;
         if (null === $location) {
             $location = new Location();
@@ -70,13 +46,13 @@ class VCenterHandler extends HandlerAbstract
         $spec->powerOn = $this->powerOn;
         $spec->template = $this->template;
         $task = $source->_CloneVM_Task($name, $source->parent, $spec);
-        $task->waitFor(0);
+        $task->waitFor(3600);
 
-        return $task->info->result;
-    }
+        /**
+         * @var VirtualMachine
+         */
+        $vm = $task->info->result->get($this->api);
 
-    public function getSource(): VirtualMachine
-    {
-        return (new VirtualMachine($this->api))->byID($this->sourceID);
+        return $vm;
     }
 }

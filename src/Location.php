@@ -2,7 +2,9 @@
 
 namespace dnj\VsphereClone;
 
+use dnj\phpvmomi\ManagedObjects\Datastore;
 use dnj\phpvmomi\ManagedObjects\VirtualMachine;
+use dnj\phpvmomi\Utils\Path;
 use dnj\VsphereClone\Contracts\ILocation;
 
 class Location implements ILocation
@@ -14,12 +16,17 @@ class Location implements ILocation
 
     public static function getVMDatastore(VirtualMachine $vm): ?string
     {
-        if (null === $vm->datastore) {
-            return null;
+        if (isset($vm->datastore->ManagedObjectReference)) {
+            $path = Path::fromDSPath($vm->config->files->vmPathName);
+            $datastores = (new Datastore($vm->getAPI()))->list();
+            foreach ($datastores as $item) {
+                if ($item->name == $path->datastore) {
+                    return $item->id;
+                }
+            }
         }
-        $datastores = array_values((array) $vm->datastore);
 
-        return $datastores[0]->_;
+        return null;
     }
 
     public static function getVMResourcePool(VirtualMachine $vm): ?string

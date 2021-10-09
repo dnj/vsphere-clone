@@ -2,9 +2,11 @@
 
 namespace dnj\VsphereClone\Contracts;
 
+use dnj\phpvmomi\ManagedObjects\VirtualMachine;
+
 interface IHandler
 {
-    public function setLocation(ILocation $location): self;
+    public function setLocation(?ILocation $location): self;
 
     public function getLocation(): ?ILocation;
 
@@ -16,8 +18,5 @@ interface IHandler
 
     public function getTemplate(): bool;
 
-    /**
-     * @return string New VM's ID
-     */
-    public function cloneTo(string $name): string;
+    public function cloneTo(string $name): VirtualMachine;
 }

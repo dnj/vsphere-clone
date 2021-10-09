@@ -3,157 +3,79 @@
 namespace dnj\VsphereClone;
 
 use dnj\Filesystem\Tmp;
-use dnj\phpvmomi\API;
-use dnj\phpvmomi\DataObjects\FolderFileInfo;
-use dnj\phpvmomi\DataObjects\ManagedObjectReference;
 use dnj\phpvmomi\ManagedObjects\Datastore;
 use dnj\phpvmomi\ManagedObjects\Folder;
-use dnj\phpvmomi\ManagedObjects\HostDatastoreBrowser;
 use dnj\phpvmomi\ManagedObjects\HostSystem;
+use dnj\phpvmomi\ManagedObjects\ResourcePool;
 use dnj\phpvmomi\ManagedObjects\VirtualMachine;
+use dnj\phpvmomi\Utils\Path;
 use dnj\VsphereClone\ESXiHandler\VmxFormatter;
 use dnj\VsphereClone\ESXiHandler\VmxParser;
 use Exception;
 
 class ESXiHandler extends HandlerAbstract
 {
-    private API $api;
-    private string $sourceID;
-
-    public function __construct(API $api, string $sourceID)
-    {
-        $this->api = $api;
-        $this->sourceID = $sourceID;
-    }
-
-    /**
-     * @return static
-     */
-    public function setSourceID(string $sourceID): self
-    {
-        $this->sourceID = $sourceID;
-
-        return $this;
-    }
-
-    public function getSourceID(): string
-    {
-        return $this->sourceID;
-    }
-
-    /**
-     * @return static
-     */
-    public function setAPI(API $api): self
-    {
-        $this->api = $api;
-
-        return $this;
-    }
-
-    public function getAPI(): API
-    {
-        return $this->api;
-    }
-
-    public function cloneTo(string $name): string
+    public function cloneTo(string $name): VirtualMachine
     {
         if ('HostAgent' != $this->api->getApiType()) {
             throw new Exception('You should use VCenterHandler');
         }
-        $datastore = $this->getSourceDatastore();
-        $location = $this->location ?? new Location();
-
-        $destDatastore = null;
-        $datastoreID = $location->getDatastore();
-        if ($datastoreID) {
-            $destDatastore = (new Datastore($this->api))->byID($datastoreID);
-        } else {
-            $destDatastore = $datastore;
+        if ($this->source instanceof VirtualMachine and !$this->source->isOff()) {
+            throw new Exception('Source machine must be off');
         }
-        $dsPath = $this->makeNewVMDirectory($destDatastore, $name);
-        $vmxResult = $this->handleVMX($datastore, $name);
+        [$host, $resourcePool, $datastore] = $this->insureLocation();
 
-        $vmxPath = "{$name}/{$name}.vmx";
-        $this->api->getFileManager()->upload($destDatastore->getFileURL($vmxPath), $vmxResult['vmx']);
+        $rootPath = $datastore->getPath($name);
+        $vmxPath = $rootPath->concat("{$name}.vmx");
+        $datastore->makeDirectory($name, false);
 
-        foreach ($vmxResult['vmdks'] as $source => $file) {
-            $this->duplicateVMDK($source, $dsPath.'/'.$file);
+        $vmxResult = $this->handleVMX($name);
+        $this->api->getFileManager()->upload($vmxPath->toURL($this->api), $vmxResult['vmx']);
+
+        foreach ($vmxResult['vmdks'] as $vmdk) {
+            $this->duplicateVMDK($vmdk['source'], $rootPath->concat($vmdk['dest']));
         }
 
-        $vmRef = $this->registerVM($destDatastore->getDatastorePath($vmxPath), $location);
+        $vm = $this->registerVM($vmxPath, $host, $resourcePool, $datastore);
 
-        /** @var VirtualMachine */
-        $vm = $vmRef->init($this->api);
         if ($this->powerOn) {
-            $task = $vm->_PowerOnVM_Task();
-            $task->waitFor(0);
+            $vm->_PowerOnVM_Task()->waitFor(0);
         }
 
-        return $vmRef->_;
+        return $vm;
     }
 
-    protected function registerVM(string $vmxPath, Contracts\ILocation $location): ManagedObjectReference
+    protected function registerVM(Path $vmxPath, HostSystem $host, ResourcePool $resourcePool, Datastore $datastore): VirtualMachine
     {
-        $resourcePoolID = $location->getResourcePool() ?? 'ha-root-pool';
-        $resourcePool = new ManagedObjectReference('ResourcePool', $resourcePoolID);
-
-        $hostID = $location->getHost() ?? 'ha-host';
-        $host = (new HostSystem($this->api))->byID($hostID);
-
         $datacenter = $host->getDatacenter();
 
         /** @var Folder */
         $vmFolder = $datacenter->vmFolder->init($this->api);
 
         $task = $vmFolder->_RegisterVM_Task(
-            $vmxPath,
+            $vmxPath->toDSPath(),
             $this->template,
             null,
-            $resourcePool,
+            $resourcePool->ref(),
             $host->ref(),
         );
         $task->waitFor(0);
 
-        return $task->info->result;
-    }
+        /** @var VirtualMachine */
+        $vm = $task->info->result->get($this->api);
 
-    protected function makeNewVMDirectory(Datastore $datastore, string $name): string
-    {
-        $browser = $datastore->browser->get($this->api);
-        $alreadyExists = $this->isDirectoryExists($datastore, $name);
-        $dsPath = $datastore->getDatastorePath($name);
-        if ($alreadyExists) {
-            throw new Exception($dsPath.' already exists');
-        }
-        $datastore->makeDirectory($name, false);
-
-        return $dsPath;
-    }
-
-    protected function isDirectoryExists(Datastore $datastore, string $name): bool
-    {
-        /**
-         * @var HostDatastoreBrowser
-         */
-        $browser = $datastore->browser->get($this->api);
-        $items = $browser->search($datastore->getDatastorePath('/'));
-        foreach ($items as $item) {
-            if ($item instanceof FolderFileInfo and $item->path === $name) {
-                return true;
-            }
-        }
-
-        return false;
+        return $vm;
     }
 
     /**
-     * @return array{"vmdks":array<string,string>,"vmx":Tmp\File}
+     * @return array{"vmdks":array<array{"source":Path,"dest":string}>,"vmx":Tmp\File}
      */
-    protected function handleVMX(Datastore $datastore, string $name)
+    protected function handleVMX(string $name)
     {
+        $source = $this->getSourcePath();
         $vmx = new Tmp\File();
-        $this->api->getFileManager()->download($datastore->getFileURL($this->parseDatastorePath()['path']), $vmx);
+        $this->api->getFileManager()->download($source->toURL($this->api), $vmx);
+
         $parser = new VmxParser($vmx);
         $values = $parser->parse();
         $values['displayName'] = $name;
@@ -169,15 +91,18 @@ class ESXiHandler extends HandlerAbstract
         unset($values['nvram'], $values['sched.swap.derivedName'], $values['migrate.hostlog'], $values['vc.uuid']);
 
         /**
-         * @var array<string,string>
+         * @var array<array{"source":Path,"dest":string}>
          */
         $vmdks = [];
-        $basename = substr($this->getBasename($this->sourceID), 0, -strlen('.vmtx'));
+        $basename = str_replace(['.vmx', '.vmtx'], '', $source->getBaseName());
         foreach ($values as $key => $value) {
             if (is_string($value) and preg_match("/\.fileName$/", $key) and preg_match("/\.vmdk$/", $value)) {
                 $newName = str_replace($basename, $name, $value);
                 $values[$key] = $newName;
-                $vmdks[$value] = $newName;
+                $vmdks[] = [
+                    'source' => $source->getDirname()->concat($value),
+                    'dest' => $newName,
+                ];
             }
         }
         $formatter = new VmxFormatter($values);
@@ -189,60 +114,14 @@ class ESXiHandler extends HandlerAbstract
         ];
     }
 
-    /**
-     * @return array{"dsName":string,"path":string}|null
-     */
-    protected function sourceIsDatastorePath(): ?array
+    protected function getSourcePath(): Path
     {
-        if (!preg_match("/^\[(.+)\]\s(.*\.vmtx)$/", $this->sourceID, $matches)) {
-            return null;
-        }
-
-        return [
-            'dsName' => $matches[1],
-            'path' => $matches[2],
-        ];
-    }
-
-    /**
-     * @return array{"dsName":string,"path":string}
-     */
-    protected function parseDatastorePath(): array
-    {
-        $result = $this->sourceIsDatastorePath();
-        if (!$result) {
-            throw new Exception();
-        }
-
-        return $result;
+        return Path::fromDSPath(is_string($this->source) ? $this->source : $this->source->config->files->vmPathName);
     }
 
     protected function getSourceDatastore(): Datastore
     {
-        $dsPath = $this->parseDatastorePath();
-        $datastore = $this->getDatastoreByName($dsPath['dsName']);
-
-        return $datastore;
-    }
-
-    protected function getDirname(string $datastorePath): string
-    {
-        $pos = strrpos($datastorePath, '/');
-        if (false === $pos) {
-            return $datastorePath;
-        }
-
-        return substr($datastorePath, 0, $pos);
-    }
-
-    protected function getBasename(string $datastorePath): string
-    {
-        $pos = strrpos($datastorePath, '/');
-        if (false === $pos) {
-            return '';
-        }
-
-        return substr($datastorePath, $pos + 1);
+        return $this->getDatastoreByName($this->getSourcePath()->datastore);
     }
 
     protected function getDatastoreByName(string $name): Datastore
@@ -256,15 +135,34 @@ class ESXiHandler extends HandlerAbstract
         throw new Exception("Datastore notfound with name: {$name}");
     }
 
-    /**
-     * @param string $source path is relative to sourceID
-     * @param string $dest   path is datstore path
-     */
-    protected function duplicateVMDK(string $source, string $dest): void
+    protected function duplicateVMDK(Path $source, Path $dest): void
     {
         $this->api
             ->getVirtualDiskManager()
-            ->_CopyVirtualDisk_Task($this->getDirname($this->sourceID).'/'.$source, $dest)
-            ->waitFor(0);
+            ->_CopyVirtualDisk_Task($source->toDSPath(), $dest->toDSPath())
+            ->waitFor(3600);
+    }
+
+    /**
+     * @return array{0:HostSystem,1:ResourcePool,2:Datastore}
+     */
+    protected function insureLocation(): array
+    {
+        $location = $this->location ?? new Location();
+
+        $datastoreID = $location->getDatastore();
+        if ($datastoreID) {
+            $datastore = (new Datastore($this->api))->byID($datastoreID);
+        } else {
+            $datastore = $this->getSourceDatastore();
+        }
+
+        $hostID = $location->getHost() ?? 'ha-host';
+        $host = (new HostSystem($this->api))->byID($hostID);
+
+        $resourcePoolID = $location->getResourcePool() ?? 'ha-root-pool';
+        $resourcePool = (new ResourcePool($this->api))->byID($resourcePoolID);
+
+        return [$host, $resourcePool, $datastore];
     }
 }
