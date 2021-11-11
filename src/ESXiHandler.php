@@ -38,6 +38,17 @@ class ESXiHandler extends HandlerAbstract
 
         $vm = $this->registerVM($vmxPath, $host, $resourcePool, $datastore);
 
+        if ($this->vmConfig) {
+            if (is_callable($this->vmConfig)) {
+                $vm->reloadFromAPI();
+                $config = call_user_func($this->vmConfig, $vm);
+            } else {
+                $config = $this->vmConfig;
+            }
+            if ($config) {
+                $vm->_ReconfigVM_Task($config)->waitFor(0);
+            }
+        }
         if ($this->powerOn) {
             $vm->_PowerOnVM_Task()->waitFor(0);
         }

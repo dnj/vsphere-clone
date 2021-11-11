@@ -2,6 +2,7 @@
 
 namespace dnj\VsphereClone\Contracts;
 
+use dnj\phpvmomi\DataObjects\VirtualMachineConfigSpec;
 use dnj\phpvmomi\ManagedObjects\VirtualMachine;
 
 interface IHandler
@@ -19,4 +20,14 @@ interface IHandler
     public function getTemplate(): bool;
 
     public function cloneTo(string $name): VirtualMachine;
+
+    /**
+     * @param VirtualMachineConfigSpec|(callable(VirtualMachine):(VirtualMachineConfigSpec|null))|null $config
+     */
+    public function setVmConfig($config): self;
+
+    /**
+     * @return VirtualMachineConfigSpec|(callable(VirtualMachine):(VirtualMachineConfigSpec|null))|null
+     */
+    public function getVmConfig();
 }

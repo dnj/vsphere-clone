@@ -3,6 +3,7 @@
 namespace dnj\VsphereClone;
 
 use dnj\phpvmomi\API;
+use dnj\phpvmomi\DataObjects\VirtualMachineConfigSpec;
 use dnj\phpvmomi\ManagedObjects\VirtualMachine;
 use dnj\VsphereClone\Contracts\IHandler;
 use dnj\VsphereClone\Contracts\ILocation;
@@ -12,6 +13,11 @@ abstract class HandlerAbstract implements IHandler
     protected ?ILocation $location = null;
     protected bool $powerOn = false;
     protected bool $template = false;
+
+    /**
+     * @var VirtualMachineConfigSpec|(callable(VirtualMachine):(VirtualMachineConfigSpec|null))|null
+     */
+    protected $vmConfig = null;
 
     protected API $api;
 
@@ -107,5 +113,20 @@ abstract class HandlerAbstract implements IHandler
     public function getTemplate(): bool
     {
         return $this->template;
+    }
+
+    /**
+     * @return static
+     */
+    public function setVmConfig($value): self
+    {
+        $this->vmConfig = $value;
+
+        return $this;
+    }
+
+    public function getVmConfig()
+    {
+        return $this->vmConfig;
     }
 }

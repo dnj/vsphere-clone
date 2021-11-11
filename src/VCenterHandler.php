@@ -38,6 +38,7 @@ class VCenterHandler extends HandlerAbstract
         $datastore = $location->getDatastore() ?? Location::getVMDatastore($source);
 
         $spec = new VirtualMachineCloneSpec();
+        $spec->config = is_callable($this->vmConfig) ? call_user_func($this->vmConfig, $source) : $this->vmConfig;
         $spec->location = new VirtualMachineRelocateSpec();
         $spec->location->datastore = $datastore ? new ManagedObjectReference('Datastore', $datastore) : null;
         $spec->location->host = $host ? new ManagedObjectReference('HostSystem', $host) : null;
